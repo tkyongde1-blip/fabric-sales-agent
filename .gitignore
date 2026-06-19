@@ -1,0 +1,7 @@
+node_modules/
+temp/
+data/msg/file/*.xlsx
+data/msg/file/*.html
+data/msg/file/*.png
+data/msg/file/~$*.xlsx
+*.log

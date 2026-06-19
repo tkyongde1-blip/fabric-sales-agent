@@ -1,0 +1,15 @@
+{
+  "name": "fabric-sales-agent",
+  "version": "1.0.0",
+  "private": true,
+  "description": "大利纺织销售单生成系统",
+  "scripts": {
+    "pipeline": "node scripts/pipeline.js"
+  },
+  "dependencies": {
+    "sharp": "^0.33.0",
+    "tesseract.js": "^5.0.0",
+    "xlsx": "^0.18.5",
+    "jszip": "^3.10.0"
+  }
+}
