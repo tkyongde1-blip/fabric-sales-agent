@@ -1,0 +1,8 @@
+name,company,phone,wechat_id,city,source,category,score,status,notes
+张三,广州天衣无缝服饰,13800138001,zhangsan_fashion,广州,douyin,B,65,contacted,做T恤的，问牛奶丝价格，说考虑一下
+李四,深圳潮流前线服饰,13900139002,lisi_apparel,深圳,douyin,A,85,negotiating,要四面弹2000米，急单，已报价，准备成交
+王五,东莞鑫盛制衣厂,13700137003,ww_garment,东莞,wechat,A,90,negotiating,罗纹布老客户，复购，已谈好价格等发货
+赵六,中山天宏制衣,13600136004,zhaoliu_textile,中山,shipin,C,30,new,问了摇粒绒价格，嫌贵没回音了
+陈七,佛山雅梦服装,13500135005,chenqi_ym,佛山,referral,B,55,contacted,同行介绍，想做卫衣布，发了报价在等回复
+刘八,广州华丰布行,13400134006,liuba_trade,广州,douyin,C,45,lost,比价型客户，说别家便宜，已放弃跟进
+周九,深圳丽人服饰,13300133007,zhoujiu_liren,深圳,shipin,A,88,sample_sent,四面弹样品已寄，客户说质量好准备下单
