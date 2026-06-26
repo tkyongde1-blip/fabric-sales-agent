@@ -37,8 +37,9 @@ async function main() {
   }
 
   const customer = getArg('customer') || '客户';
-  const name = getArg('name') || '产品';
-  const spec = getArg('spec') || '';
+  // 品名/规格优先从图片OCR提取，命令行参数可覆盖
+  const nameFromCli = getArg('name');
+  const specFromCli = getArg('spec');
   const color = getArg('color') || '';
   const price = parseFloat(getArg('price')) || undefined;
   const unit = getArg('unit') || '公斤';
@@ -74,8 +75,16 @@ async function main() {
   const imgPrice = result.summary.price;
 
   // ===== 构建产品列表 =====
-  let products;
+  // 从图片OCR提取品名/规格，命令行参数可覆盖
+  const ocrName = result.products && result.products[0] ? result.products[0].name : undefined;
+  const ocrSpec = result.products && result.products[0] ? result.products[0].spec : undefined;
+  const name = nameFromCli || ocrName || '产品';
+  const spec = specFromCli || ocrSpec || '';
 
+  console.log(`  品名来源: ${nameFromCli ? '命令行' : '图片OCR'} → ${name}`);
+  console.log(`  规格来源: ${specFromCli ? '命令行' : '图片OCR'} → ${spec}`);
+
+  let products;
   if (split > 0 && color2) {
     // 双产品：前split匹为color1，后面为color2
     const w1 = allWeights.slice(0, split);
