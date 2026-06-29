@@ -27,6 +27,7 @@ function dateSerial(date) {
   return (date - new Date(1899, 11, 30)) / 86400000;
 }
 
+/** 全局最大NO号 */
 function getNextNO() {
   if (!fs.existsSync(OUTPUT_DIR)) return 1;
   let max = 0;
@@ -36,6 +37,33 @@ function getNextNO() {
     if (m) max = Math.max(max, parseInt(m[1]));
   }
   return max + 1;
+}
+
+/** 回头客自动续号：查该客户上次NO，有则+1，无则全局+1 */
+function getNextNOForCustomer(customer) {
+  if (!fs.existsSync(OUTPUT_DIR)) return 1;
+  let customerMax = 0, globalMax = 0;
+  for (const f of fs.readdirSync(OUTPUT_DIR)) {
+    if (!f.includes('大利纺织销售单')) continue;
+    const noMatch = f.match(/NO\.?\s*(\d+)/i);
+    if (!noMatch) continue;
+    const no = parseInt(noMatch[1]);
+    globalMax = Math.max(globalMax, no);
+    try {
+      const wb = XLSX.readFile(path.join(OUTPUT_DIR, f), { sheets: ['大利纺织'] });
+      const ws = wb.Sheets['大利纺织'];
+      if (ws && ws['A5']) {
+        const name = (ws['A5'].v || '').toString().replace('名称：', '').trim();
+        if (name === customer) customerMax = Math.max(customerMax, no);
+      }
+    } catch(e) { /* skip unreadable files */ }
+  }
+  if (customerMax > 0) {
+    console.log(`  回头客「${customer}」上次NO.${customerMax}，续号NO.${customerMax+1}`);
+    return customerMax + 1;
+  }
+  console.log(`  新客户「${customer}」，默认NO.1`);
+  return 1;
 }
 
 function genOrderNo() {
@@ -114,7 +142,7 @@ async function generate({ customer, no, products, verify = true }) {
   const adjusted = applyWeightRule(products, totalWeights);
   const sheetCount = Math.ceil(totalWeights / 100);
   const orderNo = genOrderNo();
-  const noFinal = no || getNextNO();
+  const noFinal = no || getNextNOForCustomer(customer);
   const today = new Date();
 
   if (!fs.existsSync(TEMPLATE)) throw new Error(`模板不存在: ${TEMPLATE}`);
