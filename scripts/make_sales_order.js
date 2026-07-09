@@ -205,15 +205,25 @@ async function generate({ customer, no, products, verify = true }) {
     // ===== 填充数据 =====
     const st = si * 100;
     let pageRolls = 0, pageKg = 0, pageAmount = 0;
+    let weightIdx = st; // 当前重量索引
 
     for (let ro = 0; ro < ROWS; ro++) {
-      const gi = st + ro * COLS;
-      if (gi >= totalWeights) break;
+      if (weightIdx >= totalWeights) break;
 
-      const sl = fw.slice(gi, gi + COLS);
-      const fp = sl[0]?.product;
-      const isNP = gi === 0 || gi % 100 === 0 || sl[0]?.product !== fw[gi - 1]?.product;
       const rowNum = DATA_START + ro;
+      // 取当前产品的连续重量（同产品才能同行）
+      const startProd = fw[weightIdx]?.product;
+      const rowWeights = [];
+      while (weightIdx < totalWeights && rowWeights.length < COLS) {
+        const w = fw[weightIdx];
+        if (rowWeights.length > 0 && w.product !== startProd) break; // 不同产品换行
+        rowWeights.push(w);
+        weightIdx++;
+      }
+
+      const fp = rowWeights[0]?.product;
+      const isFirstRowOfProduct = ro === 0 || startProd !== fw[Math.max(0, weightIdx - rowWeights.length - 1)]?.product;
+      const isNP = ro === 0 || (rowWeights.length > 0 && isFirstRowOfProduct);
 
       // A=品名, D=规格, F=颜色, G=单位, T=单价（修改in-place保留样式边框）
       if (isNP) {
@@ -227,7 +237,7 @@ async function generate({ customer, no, products, verify = true }) {
 
       // H-Q = 重量列（修改in-place保留样式边框）
       let rowSum = 0, rowCount = 0;
-      sl.forEach((w, i) => {
+      rowWeights.forEach((w, i) => {
         if (w.weight && w.weight > 0) {
           const cell = ws[`${String.fromCharCode(72 + i)}${rowNum}`];
           if (cell) { cell.t = 'n'; cell.v = w.weight; }
@@ -294,7 +304,17 @@ async function generate({ customer, no, products, verify = true }) {
   const hp = generateHtmlPreview({ customer, no: noFinal, orderNo, products: adjusted, totalWeights, sheetCount });
   console.log(`  ✓ html预览已生成`);
 
-  return { path: outPath, htmlPath: hp, filename, no: noFinal, orderNo, sheetCount, totalWeights, rule2Applied: totalWeights > 20 };
+  // 货款催收文案 → 剪贴板
+  const totalAmount = allAmount.toFixed(2);
+  const paymentMsg = `你好，麻烦结下货款${totalAmount}`;
+  try {
+    require('child_process').execSync(`echo ${paymentMsg} | clip`, { stdio: 'ignore' });
+    console.log(`  ✓ 催收文案已复制到剪贴板: "${paymentMsg}"`);
+  } catch (e) {
+    console.log(`  ⚠ 剪贴板复制失败: ${e.message}`);
+  }
+
+  return { path: outPath, htmlPath: hp, filename, no: noFinal, orderNo, sheetCount, totalWeights, totalAmount, rule2Applied: totalWeights > 20 };
 }
 
 // ========== 交互 ==========
