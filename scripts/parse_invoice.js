@@ -278,7 +278,8 @@ async function parseDLStandard(img, meta) {
     rowMap.get(k).cells.push(c);
   }
 
-  const validRows = [...rowMap.values()].filter(r => r.cells.length >= 5)
+  const minCellsPerRow = (totalPieces && totalPieces <= 10) ? Math.min(3, totalPieces) : 5;
+  const validRows = [...rowMap.values()].filter(r => r.cells.length >= minCellsPerRow)
     .sort((a, b) => a.page - b.page || a.row - b.row);
 
   let rawWeights = [];
@@ -540,7 +541,7 @@ async function parseHongcheng(img, meta) {
   else console.log(`最终: ${finalWeights.length}匹 ${finalSum}公斤`);
 
   return {
-    summary: { pieces: totalPieces || allWeights.length, kg: totalKg, amount: totalAmount, price: unitPrice },
+    summary: { pieces: totalPieces, kg: totalKg, amount: totalAmount, price: unitPrice },
     products,
     cells: [],
     weights: finalWeights,
@@ -625,11 +626,75 @@ async function parseHengze(img, meta) {
   else console.log(`最终: ${finalWeights.length}匹 ${finalSum}公斤`);
 
   return {
-    summary: { pieces: totalPieces || allWeights.length, kg: totalKg, amount: totalAmount, price: unitPrice },
+    summary: { pieces: totalPieces, kg: totalKg, amount: totalAmount, price: unitPrice },
     products,
     cells: [],
     weights: finalWeights,
   };
+}
+
+// ==================== 通用网格模板解析器 ====================
+async function parseGridTemplate(img, meta) {
+  console.log(`通用网格模板: ${meta.width}x${meta.height}`);
+  const text = await extractSummary(img, meta);
+  const { totalPieces, totalKg, totalAmount } = parseSummary(text);
+  const { extractedWidth, extractedWeight, extractedName } = extractSpecAndName(text);
+  const specStr = (extractedWidth && extractedWeight) ? `${extractedWidth}CM${extractedWeight}G` : null;
+  console.log(`  总结: ${totalPieces||'?'}匹 ${totalKg||'?'}公斤`);
+  console.log(`  品名: ${extractedName||'未识别'}  规格: ${specStr||'未识别'}`);
+
+  const gray = await img.clone().grayscale().raw().toBuffer();
+  const hRaw = [];
+  for (let y = 0; y < meta.height; y++) {
+    let dark = 0;
+    for (let x = 0; x < meta.width; x++) if (gray[y*meta.width+x] < 100) dark++;
+    if (dark > meta.width * 0.7) hRaw.push(y);
+  }
+  const hLines = hRaw.length > 0 ? [hRaw[0]] : [];
+  for (let i = 1; i < hRaw.length; i++) if (hRaw[i] - hLines[hLines.length-1] > 2) hLines.push(hRaw[i]);
+  if (hLines.length < 3) throw new Error(`网格解析: 仅检测到${hLines.length}行线`);
+
+  const vRaw = [];
+  const dT = hLines[0], dB = hLines[hLines.length-1];
+  for (let x = 0; x < meta.width; x++) {
+    let dark = 0;
+    for (let y = dT; y < dB; y++) if (gray[y*meta.width+x] < 100) dark++;
+    if (dark > (dB-dT) * 0.6) vRaw.push(x);
+  }
+  const vLines = vRaw.length > 0 ? [vRaw[0]] : [];
+  for (let i = 1; i < vRaw.length; i++) if (vRaw[i] - vLines[vLines.length-1] > 3) vLines.push(vRaw[i]);
+
+  console.log(`  网格: ${hLines.length}×${vLines.length}`);
+
+  const allW = [];
+  for (let ri = 1; ri < hLines.length-1; ri++) {
+    const t = hLines[ri]+3, h = hLines[ri+1]-hLines[ri]-6;
+    if (h < 8 || h > 40) continue;
+    for (let ci = 1; ci < vLines.length-1; ci++) {
+      const l = vLines[ci]+3, w = vLines[ci+1]-vLines[ci]-6;
+      if (w < 15 || w > 100) continue;
+      try {
+        const cell = await img.clone()
+          .extract({ left: l, top: t, width: w, height: h })
+          .resize(200, 140, { fit: 'fill', kernel: 'lanczos3' })
+          .grayscale().normalize().sharpen(0.7).png().toBuffer();
+        const r = await Tesseract.recognize(cell, 'eng', { logger: () => {} });
+        const ns = (r.data.text||'').match(/\d{2}\.\d/g);
+        if (ns) { const v = parseFloat(ns[0]); if (v >= 10 && v <= 60) allW.push(v); }
+      } catch(e) {}
+    }
+  }
+
+  console.log(`  提取: ${allW.length}匹`);
+  const rawSum = Math.round(allW.reduce((s,w)=>s+w,0)*100)/100;
+  console.log(`总计: ${allW.length}匹 ${rawSum}公斤`);
+
+  let products = [];
+  if (extractedName || specStr) products.push({ name: extractedName || undefined, spec: specStr || undefined });
+
+  let ow = allW;
+  if (totalKg && allW.length > 0 && Math.abs(totalKg - rawSum) > 0.05) ow = await applyKgCorrection(allW, rawSum, totalKg);
+  return { summary: { pieces: totalPieces, kg: totalKg }, products, cells: [], weights: ow };
 }
 
 // ==================== 总公斤修正 ====================
@@ -677,12 +742,17 @@ async function parseInvoice(imagePath) {
     case 'HENGZE':
       return parseHengze(img, meta);
     default:
-      // 尝试大利标准（兼容）
-      console.log('未知模板，尝试大利标准解析...');
+      // 先尝试通用网格解析（有线框表格）
+      console.log('未知模板，尝试通用网格解析...');
       try {
-        return await parseDLStandard(img, meta);
-      } catch (e) {
-        throw new Error(`未知模板 (${meta.width}x${meta.height})，且大利标准解析失败: ${e.message}`);
+        return await parseGridTemplate(img, meta);
+      } catch(gridErr) {
+        console.log(`网格解析失败: ${gridErr.message}，尝试大利标准解析...`);
+        try {
+          return await parseDLStandard(img, meta);
+        } catch (e) {
+          throw new Error(`未知模板 (${meta.width}x${meta.height})，通用网格和大利标准均失败`);
+        }
       }
   }
 }

@@ -74,6 +74,32 @@ async function main() {
   const totalKg = allWeights.reduce((s, w) => s + w, 0);
   const imgPrice = result.summary.price;
 
+  // ===== 校验：逐格提取必须与图片总结行一致 =====
+  const summaryPieces = result.summary.pieces;
+  const summaryKg = result.summary.kg;
+  const kgDiff = summaryKg ? Math.abs(totalKg - summaryKg) : 0;
+
+  const errors = [];
+  if (summaryPieces && allWeights.length !== summaryPieces) {
+    errors.push(`匹数不符: 逐格提取${allWeights.length}匹 ≠ 图片总结${summaryPieces}匹`);
+  }
+  if (summaryKg && kgDiff > 0.5) {
+    errors.push(`公斤不符: 逐格合计${totalKg.toFixed(1)}kg ≠ 图片总结${summaryKg}kg (差${kgDiff.toFixed(1)}kg)`);
+  }
+  if (!summaryPieces && !summaryKg) {
+    errors.push('图片总结行未识别到总匹数和总公斤，数据不可信');
+  }
+
+  if (errors.length > 0) {
+    console.error(`\n✗ 数据校验失败，拒绝生成：`);
+    errors.forEach(e => console.error(`  - ${e}`));
+    console.error(`\n  逐格提取: ${allWeights.length}匹 ${totalKg.toFixed(1)}公斤`);
+    if (summaryPieces || summaryKg) console.error(`  图片总结: ${summaryPieces||'?'}匹 ${summaryKg||'?'}公斤`);
+    process.exit(1);
+  }
+
+  console.log(`  ✓ 数据校验通过: ${allWeights.length}匹 ${totalKg.toFixed(1)}kg (图片${summaryPieces}匹 ${summaryKg}kg)`);
+
   // ===== 构建产品列表 =====
   // 从图片OCR提取品名/规格，命令行参数可覆盖
   const ocrName = result.products && result.products[0] ? result.products[0].name : undefined;
