@@ -304,14 +304,14 @@ async function generate({ customer, no, products, verify = true }) {
   const hp = generateHtmlPreview({ customer, no: noFinal, orderNo, products: adjusted, totalWeights, sheetCount });
   console.log(`  ✓ html预览已生成`);
 
-  // 货款催收文案 → 剪贴板
+  // 催收文案 → 剪贴板
   const totalAmount = allAmount.toFixed(2);
   const paymentMsg = `你好，麻烦结下货款${totalAmount}`;
   try {
-    require('child_process').execSync(`echo ${paymentMsg} | clip`, { stdio: 'ignore' });
-    console.log(`  ✓ 催收文案已复制到剪贴板: "${paymentMsg}"`);
+    require('child_process').execSync(`echo ${paymentMsg}| clip`, { stdio: 'ignore', windowsHide: true });
+    console.log(`  💰 ${paymentMsg}  ← 已复制到剪贴板`);
   } catch (e) {
-    console.log(`  ⚠ 剪贴板复制失败: ${e.message}`);
+    console.log(`  💰 ${paymentMsg}`);
   }
 
   return { path: outPath, htmlPath: hp, filename, no: noFinal, orderNo, sheetCount, totalWeights, totalAmount, rule2Applied: totalWeights > 20 };

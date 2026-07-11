@@ -155,6 +155,21 @@ async function main() {
   console.log(`  客户: ${customer}  单号: XFS${output.orderNo}  NO.${output.no}`);
   console.log(`  匹数: ${output.totalWeights}${output.rule2Applied ? ' (规则2已应用)' : ''}`);
   console.log(`  Sheet数: ${output.sheetCount}`);
+
+  // 生成合并图（表格+收款码）→ 剪贴板
+  const qrArg = getArg('qr');
+  if (qrArg && output.htmlPath) {
+    const qrPaths = qrArg.split(';').filter(fs.existsSync);
+    const qrArgs = qrPaths.map(q => `"${q}"`).join(' ');
+    try {
+      require('child_process').execSync(
+        `node "${path.join(__dirname, 'copy_to_clipboard.js')}" "${output.path}" ${qrArgs}`,
+        { stdio: 'inherit' }
+      );
+    } catch (e) {
+      console.log(`  ⚠ 合并图生成失败: ${e.message}`);
+    }
+  }
 }
 
 main().catch(e => {
