@@ -133,11 +133,20 @@ th{background:#4472C4;color:#fff;font-weight:bold}
 
 // ========== 主生成 ==========
 
-async function generate({ customer, no, products, verify = true }) {
+async function generate({ customer, no, products, expectedPieces, expectedKg }) {
   if (!products || !products.length) throw new Error('至少需要一个产品');
   if (!customer) throw new Error('客户名不能为空');
   const totalWeights = products.reduce((s, p) => s + p.weights.length, 0);
   if (totalWeights === 0) throw new Error('至少需要一个重量');
+
+  // ===== 严格校验：匹数/公斤必须正确 =====
+  if (expectedPieces && totalWeights !== expectedPieces) {
+    throw new Error(`匹数不符: 提供${totalWeights}匹 ≠ 预期${expectedPieces}匹。拒绝生成！`);
+  }
+  const actualKg = products.reduce((s, p) => s + p.weights.reduce((a, b) => a + b, 0), 0);
+  if (expectedKg && Math.abs(actualKg - expectedKg) > 0.5) {
+    throw new Error(`公斤不符: ${actualKg.toFixed(1)}kg ≠ 预期${expectedKg}kg。拒绝生成！`);
+  }
 
   const adjusted = applyWeightRule(products, totalWeights);
   const sheetCount = Math.ceil(totalWeights / 100);
@@ -304,14 +313,20 @@ async function generate({ customer, no, products, verify = true }) {
   const hp = generateHtmlPreview({ customer, no: noFinal, orderNo, products: adjusted, totalWeights, sheetCount });
   console.log(`  ✓ html预览已生成`);
 
-  // 催收文案 → 剪贴板
+  // 催收文案 → 剪贴板 + 自动粘贴到微信
   const totalAmount = allAmount.toFixed(2);
   const paymentMsg = `你好，麻烦结下货款${totalAmount}`;
   try {
-    require('child_process').execSync(`echo ${paymentMsg}| clip`, { stdio: 'ignore', windowsHide: true });
-    console.log(`  💰 ${paymentMsg}  ← 已复制到剪贴板`);
+    const { execSync } = require('child_process');
+    // 用PowerShell复制文字到剪贴板
+    const psText = `Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Clipboard]::SetText('${paymentMsg}')`;
+    execSync(`powershell -Command "${psText}"`, { stdio: 'ignore' });
+    // 模拟 Ctrl+V 粘贴 + Enter 发送到微信
+    const psSend = `Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('^v'); Start-Sleep -Milliseconds 300; [System.Windows.Forms.SendKeys]::SendWait('{ENTER}')`;
+    execSync(`powershell -Command "${psSend}"`, { stdio: 'ignore' });
+    console.log(`  💰 ${paymentMsg}  ← 已发送到微信`);
   } catch (e) {
-    console.log(`  💰 ${paymentMsg}`);
+    console.log(`  💰 ${paymentMsg} (${e.message})`);
   }
 
   return { path: outPath, htmlPath: hp, filename, no: noFinal, orderNo, sheetCount, totalWeights, totalAmount, rule2Applied: totalWeights > 20 };
