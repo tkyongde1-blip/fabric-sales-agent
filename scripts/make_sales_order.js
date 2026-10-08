@@ -27,11 +27,22 @@ function dateSerial(date) {
   return (date - new Date(1899, 11, 30)) / 86400000;
 }
 
-/** 全局最大NO号 */
+/** 递归列出目录下所有 xlsx 文件的 [文件名, 完整路径] */
+function* walkXlsxFiles(dir) {
+  if (!fs.existsSync(dir)) return;
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (entry.isDirectory()) {
+      yield* walkXlsxFiles(path.join(dir, entry.name));
+    } else if (entry.isFile() && entry.name.endsWith('.xlsx') && !entry.name.startsWith('~$')) {
+      yield [entry.name, path.join(dir, entry.name)];
+    }
+  }
+}
+
+/** 全局最大NO号（递归扫描所有子目录） */
 function getNextNO() {
-  if (!fs.existsSync(OUTPUT_DIR)) return 1;
   let max = 0;
-  for (const f of fs.readdirSync(OUTPUT_DIR)) {
+  for (const [f] of walkXlsxFiles(OUTPUT_DIR)) {
     if (!f.includes('大利纺织销售单')) continue;
     const m = f.match(/NO\.?\s*(\d+)/i);
     if (m) max = Math.max(max, parseInt(m[1]));
@@ -39,18 +50,18 @@ function getNextNO() {
   return max + 1;
 }
 
-/** 回头客自动续号：查该客户上次NO，有则+1，无则全局+1 */
+/** 回头客自动续号：查该客户上次NO，有则+1，无则全局+1（递归扫描所有子目录） */
 function getNextNOForCustomer(customer) {
   if (!fs.existsSync(OUTPUT_DIR)) return 1;
   let customerMax = 0, globalMax = 0;
-  for (const f of fs.readdirSync(OUTPUT_DIR)) {
+  for (const [f, fullPath] of walkXlsxFiles(OUTPUT_DIR)) {
     if (!f.includes('大利纺织销售单')) continue;
     const noMatch = f.match(/NO\.?\s*(\d+)/i);
     if (!noMatch) continue;
     const no = parseInt(noMatch[1]);
     globalMax = Math.max(globalMax, no);
     try {
-      const wb = XLSX.readFile(path.join(OUTPUT_DIR, f), { sheets: ['大利纺织'] });
+      const wb = XLSX.readFile(fullPath, { sheets: ['大利纺织'] });
       const ws = wb.Sheets['大利纺织'];
       if (ws && ws['A5']) {
         const name = (ws['A5'].v || '').toString().replace('名称：', '').trim();
@@ -133,7 +144,7 @@ th{background:#4472C4;color:#fff;font-weight:bold}
 
 // ========== 主生成 ==========
 
-async function generate({ customer, no, products, expectedPieces, expectedKg }) {
+async function generate({ customer, no, products, expectedPieces, expectedKg, skipRule2 }) {
   if (!products || !products.length) throw new Error('至少需要一个产品');
   if (!customer) throw new Error('客户名不能为空');
   const totalWeights = products.reduce((s, p) => s + p.weights.length, 0);
@@ -148,7 +159,7 @@ async function generate({ customer, no, products, expectedPieces, expectedKg }) 
     throw new Error(`公斤不符: ${actualKg.toFixed(1)}kg ≠ 预期${expectedKg}kg。拒绝生成！`);
   }
 
-  const adjusted = applyWeightRule(products, totalWeights);
+  const adjusted = skipRule2 ? products : applyWeightRule(products, totalWeights);
   const sheetCount = Math.ceil(totalWeights / 100);
   const orderNo = genOrderNo();
   const noFinal = no || getNextNOForCustomer(customer);
@@ -206,6 +217,10 @@ async function generate({ customer, no, products, expectedPieces, expectedKg }) 
     if (ws['K5']) { ws['K5'].t = 's'; ws['K5'].v = `NO.${noFinal}`; }
     if (ws['T3']) { ws['T3'].t = 's'; ws['T3'].v = `XFS${orderNo}`; }
     if (ws['T4']) { ws['T4'].t = 'n'; ws['T4'].v = dateSerial(today); ws['T4'].z = 'yyyy\\-m\\-d'; }
+
+    // 如果所有产品单位都是米，E17改为"米"
+    const allMeters = products.every(p => (p.unit || '公斤') === '米');
+    if (allMeters && ws['E17']) { ws['E17'].t = 's'; ws['E17'].v = '米'; }
 
     // 当前页/总页（模板Row21已有"当前： 总页："）
     if (ws['B21']) { ws['B21'].t = 'n'; ws['B21'].v = si + 1; }
@@ -315,7 +330,7 @@ async function generate({ customer, no, products, expectedPieces, expectedKg }) 
 
   // 催收文案 → 剪贴板 + 自动粘贴到微信
   const totalAmount = allAmount.toFixed(2);
-  const paymentMsg = `你好，麻烦结下货款${totalAmount}`;
+  const paymentMsg = `老板麻烦支付一下货款${totalAmount}，付款截图请勿抹尾数，方便财务核对谢谢`;
   try {
     const { execSync } = require('child_process');
     // 用PowerShell复制文字到剪贴板
