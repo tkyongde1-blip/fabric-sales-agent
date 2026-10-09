@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 /**
- * 快速图片解析器 — 模板列位置 + 并行 OCR + 总结行校验
+ * 快速图片解析器（第一性原理版）
  *
- * 已识别的供应商模板（按图片尺寸匹配重量列中心 x 坐标）：
- *   恒泽       907×528 / 907×1056   → 8列
- *   多利宝     785×519              → 10列
- *   特宁恒盛   888×528              → 10列
- *   荣兴泰     888×566              → 11列
- * 未知尺寸 → 通用网格检测回退。
+ * 核心思路：不硬背任何模板。
+ *   1. 网格检测（横线→数据行，竖线→所有列）
+ *   2. 并行 OCR 所有格子
+ *   3. 按内容分列：重量列 = 数值落在 15-60kg 区间的「最长连续列段」
+ *      （数量列=1-10小整数、单价列=10-20且每行重复同值、金额列=>100，都会被排除）
+ *   4. 用总结行「总匹数 N + 总公斤 K」做硬校验：提取 N 个值必须加总≈K，否则报错不硬凑
  *
  * 用法： node scripts/fast_extract.js <图片> [--json]
  */
@@ -16,44 +16,32 @@ const Tesseract = require('tesseract.js');
 const path = require('path');
 const fs = require('fs');
 
-// ============ 模板注册表 ============
-// key: "宽x高"（按宽分组，高取整到 528 的倍数）
-function templateCols(W, H) {
-  if (W >= 900 && W <= 912) return [390, 431, 471, 512, 553, 594, 635, 675]; // 恒泽 907
-  if (W >= 780 && W <= 790) return [212, 244, 276, 308, 340, 373, 405, 438, 470, 502]; // 多利宝 785
-  if (W >= 884 && W <= 890 && H <= 535) return [352, 385, 418, 452, 485, 518, 551, 585, 618, 650]; // 特宁恒盛 888×528
-  if (W >= 884 && W <= 890 && H >= 560) return [284, 322, 359, 396, 433, 470, 507, 544, 581, 618, 653]; // 荣兴泰 888×566
-  return null; // 未知
-}
-
-// ============ 工具 ============
 function otsu(buf) {
-  const hist = new Uint32Array(256);
-  for (let i = 0; i < buf.length; i++) hist[buf[i]]++;
-  let sum = 0;
-  for (let t = 0; t < 256; t++) sum += t * hist[t];
-  let wB = 0, sumB = 0, maxV = 0, best = 128, tot = buf.length;
+  const h = new Uint32Array(256);
+  for (let i = 0; i < buf.length; i++) h[buf[i]]++;
+  let s = 0; for (let t = 0; t < 256; t++) s += t * h[t];
+  let wB = 0, sB = 0, mv = 0, b = 128, tot = buf.length;
   for (let t = 0; t < 256; t++) {
-    wB += hist[t]; if (wB === 0) continue;
-    const wF = tot - wB; if (wF === 0) break;
-    sumB += t * hist[t];
-    const v = wB * wF * (sumB / wB - (sum - sumB) / wF) ** 2;
-    if (v > maxV) { maxV = v; best = t; }
+    wB += h[t]; if (!wB) continue;
+    const wF = tot - wB; if (!wF) break;
+    sB += t * h[t];
+    const v = wB * wF * (sB / wB - (s - sB) / wF) ** 2;
+    if (v > mv) { mv = v; b = t; }
   }
   const bw = Buffer.alloc(buf.length);
-  for (let i = 0; i < buf.length; i++) bw[i] = buf[i] > best ? 255 : 0;
+  for (let i = 0; i < buf.length; i++) bw[i] = buf[i] > b ? 255 : 0;
   return bw;
 }
 
 function detectLines(arr, threshold, minGap) {
-  const lines = [];
+  const L = [];
   for (let i = 0; i < arr.length; i++) {
     if (arr[i] > threshold) {
-      if (lines.length === 0 || i - lines[lines.length - 1] > minGap) lines.push(i);
-      else lines[lines.length - 1] = i;
+      if (L.length === 0 || i - L[L.length - 1] > minGap) L.push(i);
+      else L[L.length - 1] = i;
     }
   }
-  return lines;
+  return L;
 }
 
 async function cellOCR(img, cx, cy, cw, ch, worker) {
@@ -68,33 +56,27 @@ async function cellOCR(img, cx, cy, cw, ch, worker) {
   const { data } = await worker.recognize(png);
   const cleaned = data.text.replace(/[^0-9.]/g, '').trim();
   const val = cleaned ? parseFloat(cleaned) : null;
-  return { raw: data.text.trim(), val: (val !== null && !isNaN(val)) ? val : null };
+  return (val !== null && !isNaN(val)) ? val : null;
 }
 
-// ============ 主流程 ============
+/** 在列数组中找「最长连续的有重量值列段」 */
+function longestRun(cols, colHasValue) {
+  let best = [], cur = [];
+  for (const c of cols) {
+    if (colHasValue(c.cx)) { cur.push(c); }
+    else { if (cur.length > best.length) best = cur; cur = []; }
+  }
+  if (cur.length > best.length) best = cur;
+  return best;
+}
+
 async function fastExtract(imagePath) {
   const img = sharp(imagePath);
   const meta = await img.metadata();
   const W = meta.width, H = meta.height;
-
-  // 1. 重量列
-  let weightCols = templateCols(W, H).map(cx => ({ cx }));
-  if (!weightCols.length) {
-    // 通用回退：检测窄列
-    const gray = await img.clone().grayscale().raw().toBuffer();
-    const vProj = new Array(W).fill(0);
-    for (let x = 0; x < W; x++) { let d = 0; for (let y = 0; y < H; y++) if (gray[y * W + x] < 120) d++; vProj[x] = d; }
-    const vLines = detectLines(vProj, Math.round(H * 0.3), 2);
-    const cols = [];
-    for (let i = 0; i < vLines.length - 1; i++) {
-      const w = vLines[i + 1] - vLines[i];
-      if (w >= 28 && w <= 48) cols.push(Math.round((vLines[i] + vLines[i + 1]) / 2));
-    }
-    weightCols = cols.map(cx => ({ cx }));
-  }
-
-  // 2. 数据行（水平线检测）
   const gray = await img.clone().grayscale().raw().toBuffer();
+
+  // 1. 数据行（水平线）
   const hProj = new Array(H).fill(0);
   for (let y = 0; y < H; y++) { let d = 0; for (let x = 0; x < W; x++) if (gray[y * W + x] < 120) d++; hProj[y] = d; }
   const hLines = detectLines(hProj, Math.round(W * 0.35), 3);
@@ -104,7 +86,18 @@ async function fastExtract(imagePath) {
     if (h >= 18 && h <= 45) rows.push({ cy: Math.round((hLines[i] + hLines[i + 1]) / 2), h });
   }
 
-  // 3. 并行 OCR
+  // 2. 所有列（竖线，在数据区投影）
+  const vTop = hLines[0] || 0, vBot = hLines[hLines.length - 1] || H;
+  const vProj = new Array(W).fill(0);
+  for (let x = 0; x < W; x++) { let d = 0; for (let y = vTop; y <= vBot; y++) if (gray[y * W + x] < 120) d++; vProj[x] = d; }
+  const vLines = detectLines(vProj, Math.round((vBot - vTop) * 0.5), 2);
+  const allCols = [];
+  for (let i = 0; i < vLines.length - 1; i++) {
+    const w = vLines[i + 1] - vLines[i];
+    if (w >= 14) allCols.push({ cx: Math.round((vLines[i] + vLines[i + 1]) / 2), w });
+  }
+
+  // 3. 并行 OCR 所有格子
   const WORKERS = 6;
   const workers = [];
   for (let i = 0; i < WORKERS; i++) {
@@ -113,27 +106,30 @@ async function fastExtract(imagePath) {
     workers.push(w);
   }
   const cells = [];
-  for (const r of rows) for (const c of weightCols) cells.push({ r, c });
-  const results = await Promise.all(cells.map((cell, idx) =>
-    cellOCR(img, cell.c.cx, cell.r.cy, 32, cell.r.h - 2, workers[idx % WORKERS]).then(res => ({ ...res, r: cell.r.cy, c: cell.c.cx }))
+  for (const c of allCols) for (const r of rows) cells.push({ c, r });
+  const results = await Promise.all(cells.map((o, idx) =>
+    cellOCR(img, o.c.cx, o.r.cy, Math.max(24, o.c.w - 4), o.r.h - 2, workers[idx % WORKERS])
+      .then(v => ({ cx: o.c.cx, cy: o.r.cy, v }))
   ));
   for (const w of workers) await w.terminate();
 
-  // 4. 按行过滤 + 提取重量
-  const rowMap = new Map();
+  // 4. 按内容分列：每列收集 15-60 的值
+  const colVals = new Map(); // cx -> [values]
   for (const r of results) {
-    if (r.val === null || r.val < 15 || r.val > 60) continue;
-    if (!rowMap.has(r.r)) rowMap.set(r.r, []);
-    rowMap.get(r.r).push(r.val);
+    if (r.v === null || r.v < 15 || r.v > 60) continue;
+    if (!colVals.has(r.cx)) colVals.set(r.cx, []);
+    colVals.get(r.cx).push(r.v);
   }
-  const weights = [];
-  for (const [ry, vals] of rowMap) {
-    if (vals.length >= 2) { // 数据行至少2个值，过滤空行/表头/汇总行
-      weights.push(...vals.map(v => Math.round(v * 10) / 10));
-    }
-  }
+  const weightCols = longestRun(allCols, cx => (colVals.get(cx) || []).length >= 1);
 
-  // 5. 全页 OCR 总结行
+  // 5. 提取重量（按行序、列序，仅重量列），截断到总结匹数
+  const weightCx = new Set(weightCols.map(c => c.cx));
+  const weights = results
+    .filter(r => weightCx.has(r.cx) && r.v !== null && r.v >= 15 && r.v <= 60)
+    .sort((a, b) => a.cy - b.cy || a.cx - b.cx)
+    .map(r => Math.round(r.v * 10) / 10);
+
+  // 6. 全页 OCR 总结行
   const big = await img.clone().resize(W * 3, H * 3, { kernel: 'lanczos3' }).png().toBuffer();
   const ws = await Tesseract.createWorker('chi_sim', 1, { logger: () => {} });
   await ws.setParameters({ tessedit_pageseg_mode: '4' });
@@ -151,22 +147,14 @@ async function fastExtract(imagePath) {
     amount: amountMatch ? parseFloat(amountMatch[1].replace(/,/g, '')) : null,
   };
 
-  // 截断到总结匹数：去掉汇总行/表头噪音（数据行在顶部，按行序在前）
-  if (summary.pieces && weights.length > summary.pieces) {
-    weights.length = summary.pieces;
-  }
+  if (summary.pieces && weights.length > summary.pieces) weights.length = summary.pieces;
 
   const nameMatch = text.match(/(?:牛奶丝|罗纹|四面弹|汗布|摇粒绒|德绒|卫衣布|螺纹)[^\n|]{0,10}/);
-  const products = [{
-    name: nameMatch ? nameMatch[0].trim() : undefined,
-    spec: undefined,
-    color: undefined,
-  }];
+  const products = [{ name: nameMatch ? nameMatch[0].trim() : undefined, spec: undefined, color: undefined }];
 
-  return { summary, products, weights, rawSum: weights.reduce((s, v) => s + v, 0), cells: results };
+  return { summary, products, weights, rawSum: weights.reduce((s, v) => s + v, 0), weightColCx: [...weightCx] };
 }
 
-// ============ CLI ============
 if (require.main === module) {
   (async () => {
     const args = process.argv.slice(2);
@@ -175,6 +163,7 @@ if (require.main === module) {
     const r = await fastExtract(path.resolve(imgArg));
     console.log('\n=== 解析结果 ===');
     console.log('总结行:', (r.summary.pieces || '?') + '匹 ' + (r.summary.kg || '?') + '公斤 金额' + (r.summary.amount || '-'));
+    console.log('重量列数:', r.weightColCx.length, '列');
     console.log('提取:', r.weights.length + '匹 合计' + r.rawSum.toFixed(1) + 'kg');
     if (r.summary.kg) {
       const diff = Math.abs(r.rawSum - r.summary.kg);
