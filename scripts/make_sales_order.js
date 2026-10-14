@@ -326,6 +326,9 @@ async function generate({ customer, no, products, expectedPieces, expectedKg, sk
     try { await fixFormulaU1(outPath, sheetCount); } catch (e) { console.log('  ⚠ U1 fix:', e.message); }
   }
 
+  // 表头文字变长后，加宽单价列（T列，min=20）让文字完整可见
+  try { await fixColWidth(outPath, sheetCount); } catch (e) { console.log('  ⚠ col width fix:', e.message); }
+
   const hp = generateHtmlPreview({ customer, no: noFinal, orderNo, products: adjusted, totalWeights, sheetCount });
   console.log(`  ✓ html预览已生成`);
 
@@ -388,6 +391,20 @@ async function fixFormulaU1(xlsxPath, sheetCount) {
     if (!z.file(key)) continue;
     let xml = await z.file(key).async('string');
     xml = xml.replace(/(<c[^>]*?r="U1"[^>]*?>)\s*<f[^>]*>[\s\S]*?<\/f>\s*/g, '$1');
+    z.file(key, xml);
+  }
+  require('fs').writeFileSync(xlsxPath, await z.generateAsync({ type: 'nodebuffer' }));
+}
+
+/** 加宽单价列（T列，min=20）使表头文字完整可见 */
+async function fixColWidth(xlsxPath, sheetCount) {
+  const JSZip = require('jszip');
+  const z = await JSZip.loadAsync(require('fs').readFileSync(xlsxPath));
+  for (let si = 1; si <= sheetCount; si++) {
+    const key = 'xl/worksheets/sheet' + si + '.xml';
+    if (!z.file(key)) continue;
+    let xml = await z.file(key).async('string');
+    xml = xml.replace(/<col min="20"([^>]*?)width="[^"]*"/, '<col min="20"$1width="14"');
     z.file(key, xml);
   }
   require('fs').writeFileSync(xlsxPath, await z.generateAsync({ type: 'nodebuffer' }));
