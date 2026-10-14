@@ -217,6 +217,7 @@ async function generate({ customer, no, products, expectedPieces, expectedKg, sk
     if (ws['K5']) { ws['K5'].t = 's'; ws['K5'].v = `NO.${noFinal}`; }
     if (ws['T3']) { ws['T3'].t = 's'; ws['T3'].v = `XFS${orderNo}`; }
     if (ws['T4']) { ws['T4'].t = 'n'; ws['T4'].v = dateSerial(today); ws['T4'].z = 'yyyy\\-m\\-d'; }
+    if (ws['T6']) { ws['T6'].t = 's'; ws['T6'].v = '单价(不含税)'; }
 
     // 如果所有产品单位都是米，E17改为"米"
     const allMeters = products.every(p => (p.unit || '公斤') === '米');
