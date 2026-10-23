@@ -93,15 +93,17 @@ function applyWeightRule(products, totalWeights) {
   for (const prod of products) for (const w of prod.weights)
     flat.push({ weight: w, pid: products.indexOf(prod) });
 
-  // 规则：总匹数×0.2=总加重量，分配到随机匹各+1kg
+  // 规则：总匹数×0.2=总加重量，但只分配到「匹数>20的单规格」各匹+1kg（单规格≤20匹不加）
   const totalExtra = Math.floor(totalWeights * 0.2);
-  const indices = [...Array(flat.length).keys()];
+  const eligible = flat.map((f, i) => (products[f.pid].weights.length > 20 ? i : -1)).filter(i => i >= 0);
+  const indices = eligible.slice();
   // 打乱取前totalExtra个
   for (let i = indices.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [indices[i], indices[j]] = [indices[j], indices[i]];
   }
-  for (let i = 0; i < totalExtra && i < indices.length; i++) {
+  const n = Math.min(totalExtra, indices.length);
+  for (let i = 0; i < n; i++) {
     flat[indices[i]].weight += 1;
   }
 
